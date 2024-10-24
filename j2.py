@@ -16,8 +16,10 @@ logging.getLogger('ib_insync.ib').setLevel(logging.WARNING)
 
 util.startLoop()
 
+host = '127.0.0.1'
+port = 7497
 class IBConnection:
-    def __init__(self, host='127.0.0.1', port=7497, client_id=random.randint(1, 1000), max_attempts=3, retry_wait=5):
+    def __init__(self, host=host, port=port, client_id=random.randint(1, 1000), max_attempts=3, retry_wait=5):
         self.host = host
         self.port = port
         self.client_id = client_id
@@ -100,6 +102,7 @@ class MarketData:
             instrument_suffix = "STK" if instrument_type == "stock" else "OPT"
             
             if data_type == "OHLC":
+                # Get option bars
                 bars = self.ib_connection.ib.reqHistoricalData(
                     contract,
                     endDateTime='',
@@ -115,22 +118,34 @@ class MarketData:
                 
                 # Add current price, volume, and Greeks for options
                 if instrument_type == "option":
-                    # First get underlying stock data
+                    # Get underlying stock contract
                     underlying_contract = Stock(symbol, 'SMART', 'USD')
                     self.ib_connection.ib.qualifyContracts(underlying_contract)
                     
-                    # Get current underlying stock price
+                    # Get underlying price data for the same timeframe
                     underlying_bars = self.ib_connection.ib.reqHistoricalData(
                         underlying_contract,
                         endDateTime='',
-                        durationStr='1 D',
-                        barSizeSetting='1 min',
+                        durationStr=duration,
+                        barSizeSetting=timeframe,
                         whatToShow='TRADES',
                         useRTH=True
                     )
+                    
                     if underlying_bars:
-                        # Add the current underlying price to all rows
-                        df['underlyingPrice'] = underlying_bars[-1].close
+                        # Convert underlying bars to DataFrame
+                        underlying_df = util.df(underlying_bars)
+                        # Ensure date columns are in the same timezone
+                        df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
+                        underlying_df['date'] = pd.to_datetime(underlying_df['date']).dt.tz_localize(None)
+                        
+                        # Merge the underlying prices with option data based on timestamp
+                        df['underlyingPrice'] = np.nan
+                        for idx, row in df.iterrows():
+                            # Find the matching underlying price for this timestamp
+                            matching_price = underlying_df[underlying_df['date'] == row['date']]['close']
+                            if not matching_price.empty:
+                                df.at[idx, 'underlyingPrice'] = matching_price.iloc[0]
                     
                     # Get option data for Greeks
                     ticker = self.ib_connection.ib.reqMktData(contract)
@@ -377,7 +392,7 @@ class LiveStreaming:
         return self.filtered_df
 
 if __name__ == "__main__":
-    ib_connection = IBConnection('127.0.0.1', 7497, random.randint(1, 1000))
+    ib_connection = IBConnection(host, port, random.randint(1, 1000))
     if not ib_connection.connect():
         print("Exiting due to connection failure")
         exit(1)
@@ -396,7 +411,7 @@ if __name__ == "__main__":
         choice = input("Enter your choice (1-5): ")
         
         if choice in ['1', '2', '4']:
-            print("Enter instrument type (stock/option/index):")
+            print("\nEnter instrument type (stock/option/index):")
             instrument_type = input().lower()
             symbol = input("Enter symbol: ")
             
@@ -407,13 +422,33 @@ if __name__ == "__main__":
                 right = input("Enter right (C/P): ")
             
             if choice == '1':
-                timeframe = input("Enter timeframe (e.g., 1 min, 1 hour, 1 day): ")
-                duration = input("Enter duration (e.g., 1 D, 1 W, 1 M): ")
+                print("\nAvailable timeframes:")
+                print("1 secs, 5 secs, 10 secs, 15 secs, 30 secs")
+                print("1 min, 2 mins, 3 mins, 5 mins, 10 mins, 15 mins, 20 mins, 30 mins")
+                print("1 hour, 2 hours, 3 hours, 4 hours, 8 hours")
+                print("1 day, 1W, 1M")
+                timeframe = input("\nEnter timeframe from the above options: ")
+                
+                print("\nDuration format examples:")
+                print("Seconds: '60 S'")
+                print("Days: '30 D'")
+                print("Weeks: '13 W'")
+                print("Months: '6 M'")
+                print("Years: '10 Y'")
+                duration = input("\nEnter duration using above format: ")
+                
                 df = market_data.get_market_data(instrument_type, symbol, "OHLC", timeframe, duration, expiry, strike, right)
                 if df is not None:
                     print(df)
             elif choice == '2':
-                duration = input("Enter duration (e.g., 1 D, 1 W, 1 M): ")
+                print("\nDuration format examples:")
+                print("Seconds: '60 S'")
+                print("Days: '30 D'")
+                print("Weeks: '13 W'")
+                print("Months: '6 M'")
+                print("Years: '10 Y'")
+                duration = input("\nEnter duration using above format: ")
+                
                 df = market_data.get_market_data(instrument_type, symbol, "historical", duration=duration, expiry=expiry, strike=strike, right=right)
                 if df is not None:
                     print(df)
